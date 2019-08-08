@@ -106,7 +106,13 @@ static NSURLCredential* clientAuthenticationCredential;
 - (void)didMoveToWindow
 {
   if (self.window != nil && _webView == nil) {
-    WKWebViewConfiguration *wkWebViewConfig = [WKWebViewConfiguration new];
+    WKWebViewConfiguration *wkWebViewConfig;
+    if (_wkWebViewConfig) {
+      wkWebViewConfig = _wkWebViewConfig;
+    } else {
+      wkWebViewConfig = [WKWebViewConfiguration new];
+    }
+      
     if (_incognito) {
       wkWebViewConfig.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore];
     } else if (_cacheEnabled) {
