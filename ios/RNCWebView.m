@@ -5,7 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#import "RNCWKWebView.h"
+#import "RNCWebView.h"
 #import <React/RCTConvert.h>
 #import <React/RCTAutoInsetsProtocol.h>
 #import "RNCWKProcessPoolManager.h"
@@ -16,34 +16,48 @@
 static NSTimer *keyboardTimer;
 static NSString *const MessageHandlerName = @"ReactNativeWebView";
 static NSURLCredential* clientAuthenticationCredential;
+static NSDictionary* customCertificatesForHost;
 
 // runtime trick to remove WKWebView keyboard default toolbar
 // see: http://stackoverflow.com/questions/19033292/ios-7-uiwebview-keyboard-issue/19042279#19042279
-@interface _SwizzleHelperWK : NSObject @end
+@interface _SwizzleHelperWK : UIView
+@property (nonatomic, copy) WKWebView *webView;
+@end
 @implementation _SwizzleHelperWK
 -(id)inputAccessoryView
 {
-  return nil;
+    if (_webView == nil) {
+        return nil;
+    }
+
+    if ([_webView respondsToSelector:@selector(inputAssistantItem)]) {
+        UITextInputAssistantItem *inputAssistantItem = [_webView inputAssistantItem];
+        inputAssistantItem.leadingBarButtonGroups = @[];
+        inputAssistantItem.trailingBarButtonGroups = @[];
+    }
+    return nil;
 }
 @end
 
-@interface RNCWKWebView () <WKUIDelegate, WKNavigationDelegate, WKScriptMessageHandler, UIScrollViewDelegate, RCTAutoInsetsProtocol>
+@interface RNCWebView () <WKUIDelegate, WKNavigationDelegate, WKScriptMessageHandler, UIScrollViewDelegate, RCTAutoInsetsProtocol>
 @property (nonatomic, copy) RCTDirectEventBlock onLoadingStart;
 @property (nonatomic, copy) RCTDirectEventBlock onLoadingFinish;
 @property (nonatomic, copy) RCTDirectEventBlock onLoadingError;
 @property (nonatomic, copy) RCTDirectEventBlock onLoadingProgress;
 @property (nonatomic, copy) RCTDirectEventBlock onShouldStartLoadWithRequest;
+@property (nonatomic, copy) RCTDirectEventBlock onHttpError;
 @property (nonatomic, copy) RCTDirectEventBlock onMessage;
 @property (nonatomic, copy) RCTDirectEventBlock onScroll;
+@property (nonatomic, copy) RCTDirectEventBlock onContentProcessDidTerminate;
 @property (nonatomic, copy) WKWebView *webView;
 @end
 
-@implementation RNCWKWebView
+@implementation RNCWebView
 {
   UIColor * _savedBackgroundColor;
   BOOL _savedHideKeyboardAccessoryView;
   BOOL _savedKeyboardDisplayRequiresUserAction;
-  
+
   // Workaround for StatusBar appearance bug for iOS 12
   // https://github.com/react-native-community/react-native-webview/issues/62
   BOOL _isFullScreenVideoOpen;
@@ -86,12 +100,20 @@ static NSURLCredential* clientAuthenticationCredential;
       addObserver:self
       selector:@selector(keyboardWillShow)
       name:UIKeyboardWillShowNotification object:nil];
-    
+
     // Workaround for StatusBar appearance bug for iOS 12
     // https://github.com/react-native-community/react-native-webview/issues/62
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(toggleFullScreenVideoStatusBars) name:@"_MRMediaRemotePlayerSupportedCommandsDidChangeNotification" object:nil];
+      [[NSNotificationCenter defaultCenter] addObserver:self
+                                               selector:@selector(showFullScreenVideoStatusBars)
+                                                   name:UIWindowDidBecomeVisibleNotification
+                                                 object:nil];
+
+      [[NSNotificationCenter defaultCenter] addObserver:self
+                                               selector:@selector(hideFullScreenVideoStatusBars)
+                                                   name:UIWindowDidBecomeHiddenNotification
+                                                 object:nil];
   }
-  
+
   return self;
 }
 
@@ -115,6 +137,11 @@ static NSURLCredential* clientAuthenticationCredential;
 {
   if (self.window != nil && _webView == nil) {
     WKWebViewConfiguration *wkWebViewConfig = [WKWebViewConfiguration new];
+    WKPreferences *prefs = [[WKPreferences alloc]init];
+    if (!_javaScriptEnabled) {
+      prefs.javaScriptEnabled = NO;
+      wkWebViewConfig.preferences = prefs;
+    }
     if (_incognito) {
       wkWebViewConfig.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore];
     } else if (_cacheEnabled) {
@@ -217,6 +244,7 @@ static NSURLCredential* clientAuthenticationCredential;
     }
 
     _webView = [[WKWebView alloc] initWithFrame:self.bounds configuration: wkWebViewConfig];
+    [self setBackgroundColor: _savedBackgroundColor];
     _webView.scrollView.delegate = self;
     _webView.UIDelegate = self;
     _webView.navigationDelegate = self;
@@ -266,21 +294,24 @@ static NSURLCredential* clientAuthenticationCredential;
     [super removeFromSuperview];
 }
 
--(void)toggleFullScreenVideoStatusBars
+-(void)showFullScreenVideoStatusBars
 {
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-  if (!_isFullScreenVideoOpen) {
     _isFullScreenVideoOpen = YES;
     RCTUnsafeExecuteOnMainQueueSync(^{
       [RCTSharedApplication() setStatusBarStyle:UIStatusBarStyleLightContent animated:YES];
     });
-  } else {
+#pragma clang diagnostic pop
+}
+
+-(void)hideFullScreenVideoStatusBars
+{
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
     _isFullScreenVideoOpen = NO;
     RCTUnsafeExecuteOnMainQueueSync(^{
-      [RCTSharedApplication() setStatusBarHidden:_savedStatusBarHidden animated:YES];
-      [RCTSharedApplication() setStatusBarStyle:_savedStatusBarStyle animated:YES];
+      [RCTSharedApplication() setStatusBarHidden:self->_savedStatusBarHidden animated:YES];
+      [RCTSharedApplication() setStatusBarStyle:self->_savedStatusBarStyle animated:YES];
     });
-  }
 #pragma clang diagnostic pop
 }
 
@@ -377,6 +408,17 @@ static NSURLCredential* clientAuthenticationCredential;
   }
 }
 
+- (void)setAllowingReadAccessToURL:(NSString *)allowingReadAccessToURL
+{
+  if (![_allowingReadAccessToURL isEqualToString:allowingReadAccessToURL]) {
+    _allowingReadAccessToURL = [allowingReadAccessToURL copy];
+
+    if (_webView != nil) {
+      [self visitSource];
+    }
+  }
+}
+
 - (void)setContentInset:(UIEdgeInsets)contentInset
 {
   _contentInset = contentInset;
@@ -422,7 +464,8 @@ static NSURLCredential* clientAuthenticationCredential;
         [_webView loadRequest:request];
     }
     else {
-        [_webView loadFileURL:request.URL allowingReadAccessToURL:request.URL];
+        NSURL* readAccessUrl = _allowingReadAccessToURL ? [RCTConvert NSURL:_allowingReadAccessToURL] : request.URL;
+        [_webView loadFileURL:request.URL allowingReadAccessToURL:readAccessUrl];
     }
 }
 
@@ -432,22 +475,22 @@ static NSURLCredential* clientAuthenticationCredential;
         _savedKeyboardDisplayRequiresUserAction = keyboardDisplayRequiresUserAction;
         return;
     }
-  
+
     if (_savedKeyboardDisplayRequiresUserAction == true) {
         return;
     }
-  
+
     UIView* subview;
-  
+
     for (UIView* view in _webView.scrollView.subviews) {
         if([[view.class description] hasPrefix:@"WK"])
             subview = view;
     }
-  
+
     if(subview == nil) return;
-  
+
     Class class = subview.class;
-  
+
     NSOperatingSystemVersion iOS_11_3_0 = (NSOperatingSystemVersion){11, 3, 0};
     NSOperatingSystemVersion iOS_12_2_0 = (NSOperatingSystemVersion){12, 2, 0};
     NSOperatingSystemVersion iOS_13_0_0 = (NSOperatingSystemVersion){13, 0, 0};
@@ -490,7 +533,7 @@ static NSURLCredential* clientAuthenticationCredential;
             ((void (*)(id, SEL, void*, BOOL, BOOL, id))original)(me, selector, arg0, TRUE, arg2, arg3);
         });
     }
-  
+
     method_setImplementation(method, override);
 }
 
@@ -606,7 +649,7 @@ static NSURLCredential* clientAuthenticationCredential;
 {
   [super layoutSubviews];
 
-  // Ensure webview takes the position and dimensions of RNCWKWebView
+  // Ensure webview takes the position and dimensions of RNCWebView
   _webView.frame = self.bounds;
   _webView.scrollView.contentInset = _contentInset;
 }
@@ -627,19 +670,44 @@ static NSURLCredential* clientAuthenticationCredential;
   clientAuthenticationCredential = credential;
 }
 
++ (void)setCustomCertificatesForHost:(nullable NSDictionary*)certificates {
+    customCertificatesForHost = certificates;
+}
+
 - (void)                    webView:(WKWebView *)webView
   didReceiveAuthenticationChallenge:(NSURLAuthenticationChallenge *)challenge
                   completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential * _Nullable))completionHandler
 {
-  if (!clientAuthenticationCredential) {
+    NSString* host = nil;
+    if (webView.URL != nil) {
+        host = webView.URL.host;
+    }
+    if ([[challenge protectionSpace] authenticationMethod] == NSURLAuthenticationMethodClientCertificate) {
+        completionHandler(NSURLSessionAuthChallengeUseCredential, clientAuthenticationCredential);
+        return;
+    }
+    if ([[challenge protectionSpace] serverTrust] != nil && customCertificatesForHost != nil && host != nil) {
+        SecCertificateRef localCertificate = (__bridge SecCertificateRef)([customCertificatesForHost objectForKey:host]);
+        if (localCertificate != nil) {
+            NSData *localCertificateData = (NSData*) CFBridgingRelease(SecCertificateCopyData(localCertificate));
+            SecTrustRef trust = [[challenge protectionSpace] serverTrust];
+            long count = SecTrustGetCertificateCount(trust);
+            for (long i = 0; i < count; i++) {
+                SecCertificateRef serverCertificate = SecTrustGetCertificateAtIndex(trust, i);
+                if (serverCertificate == nil) { continue; }
+                NSData *serverCertificateData = (NSData *) CFBridgingRelease(SecCertificateCopyData(serverCertificate));
+                if ([serverCertificateData isEqualToData:localCertificateData]) {
+                    NSURLCredential *useCredential = [NSURLCredential credentialForTrust:trust];
+                    if (challenge.sender != nil) {
+                        [challenge.sender useCredential:useCredential forAuthenticationChallenge:challenge];
+                    }
+                    completionHandler(NSURLSessionAuthChallengeUseCredential, useCredential);
+                    return;
+                }
+            }
+        }
+    }
     completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
-    return;
-  }
-  if ([[challenge protectionSpace] authenticationMethod] == NSURLAuthenticationMethodClientCertificate) {
-    completionHandler(NSURLSessionAuthChallengeUseCredential, clientAuthenticationCredential);
-  } else {
-    completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
-  }
 }
 
 #pragma mark - WKNavigationDelegate methods
@@ -695,8 +763,8 @@ static NSURLCredential* clientAuthenticationCredential;
  * topViewController
  */
 -(UIViewController *)topViewController{
-   UIViewController *controller = [self topViewControllerWithRootViewController:[self getCurrentWindow].rootViewController];
-   return controller;
+    UIViewController *controller = [self topViewControllerWithRootViewController:[self getCurrentWindow].rootViewController];
+    return controller;
 }
 
 /**
@@ -766,7 +834,7 @@ static NSURLCredential* clientAuthenticationCredential;
     if (![self.delegate webView:self
       shouldStartLoadForRequest:event
                    withCallback:_onShouldStartLoadWithRequest]) {
-      decisionHandler(WKNavigationResponsePolicyCancel);
+      decisionHandler(WKNavigationActionPolicyCancel);
       return;
     }
   }
@@ -785,6 +853,47 @@ static NSURLCredential* clientAuthenticationCredential;
   }
 
   // Allow all navigation by default
+  decisionHandler(WKNavigationActionPolicyAllow);
+}
+
+/**
+ * Called when the web view’s content process is terminated.
+ * @see https://developer.apple.com/documentation/webkit/wknavigationdelegate/1455639-webviewwebcontentprocessdidtermi?language=objc
+ */
+- (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView
+{
+  RCTLogWarn(@"Webview Process Terminated");
+  if (_onContentProcessDidTerminate) {
+    NSMutableDictionary<NSString *, id> *event = [self baseEvent];
+    _onContentProcessDidTerminate(event);
+  }
+}
+
+/**
+ * Decides whether to allow or cancel a navigation after its response is known.
+ * @see https://developer.apple.com/documentation/webkit/wknavigationdelegate/1455643-webview?language=objc
+ */
+- (void)                    webView:(WKWebView *)webView
+  decidePolicyForNavigationResponse:(WKNavigationResponse *)navigationResponse
+                    decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler
+{
+  if (_onHttpError && navigationResponse.forMainFrame) {
+    if ([navigationResponse.response isKindOfClass:[NSHTTPURLResponse class]]) {
+      NSHTTPURLResponse *response = (NSHTTPURLResponse *)navigationResponse.response;
+      NSInteger statusCode = response.statusCode;
+
+      if (statusCode >= 400) {
+        NSMutableDictionary<NSString *, id> *event = [self baseEvent];
+        [event addEntriesFromDictionary: @{
+          @"url": response.URL.absoluteString,
+          @"statusCode": @(statusCode)
+        }];
+
+        _onHttpError(event);
+      }
+    }
+  }  
+
   decisionHandler(WKNavigationResponsePolicyAllow);
 }
 
@@ -821,8 +930,6 @@ static NSURLCredential* clientAuthenticationCredential;
     }];
     _onLoadingError(event);
   }
-
-  [self setBackgroundColor: _savedBackgroundColor];
 }
 
 - (void)evaluateJS:(NSString *)js
@@ -833,7 +940,7 @@ static NSURLCredential* clientAuthenticationCredential;
       callback([NSString stringWithFormat:@"%@", result]);
     }
     if (error != nil) {
-      RCTLogWarn([NSString stringWithFormat:@"Error evaluating injectedJavaScript: This is possibly due to an unsupported return type. Try adding true to the end of your injectedJavaScript string. %@", error]);
+      RCTLogWarn(@"%@", [NSString stringWithFormat:@"Error evaluating injectedJavaScript: This is possibly due to an unsupported return type. Try adding true to the end of your injectedJavaScript string. %@", error]);
     }
   }];
 }
@@ -857,8 +964,6 @@ static NSURLCredential* clientAuthenticationCredential;
   } else if (_onLoadingFinish) {
     _onLoadingFinish([self baseEvent]);
   }
-
-  [self setBackgroundColor: _savedBackgroundColor];
 }
 
 - (void)injectJavaScript:(NSString *)script
