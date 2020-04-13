@@ -136,7 +136,13 @@ static NSDictionary* customCertificatesForHost;
 - (void)didMoveToWindow
 {
   if (self.window != nil && _webView == nil) {
-    WKWebViewConfiguration *wkWebViewConfig = [WKWebViewConfiguration new];
+    WKWebViewConfiguration *wkWebViewConfig;
+    if(self.defaultConfiguration == nil ) {
+        wkWebViewConfig = [WKWebViewConfiguration new];
+    } else {
+        wkWebViewConfig = self.defaultConfiguration;
+    }
+
     WKPreferences *prefs = [[WKPreferences alloc]init];
     BOOL _prefsUsed = NO;
     if (!_javaScriptEnabled) {
