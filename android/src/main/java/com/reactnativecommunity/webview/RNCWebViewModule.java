@@ -66,6 +66,11 @@ public class RNCWebViewModule extends ReactContextBaseJavaModule implements Acti
     }
   };
 
+  @Override    
+  public boolean canOverrideExistingModule() {        
+    return true;    
+  }  
+
   public RNCWebViewModule(ReactApplicationContext reactContext) {
     super(reactContext);
     reactContext.addActivityEventListener(this);
