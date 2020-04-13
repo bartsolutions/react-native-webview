@@ -186,8 +186,13 @@ static NSDictionary* customCertificatesForHost;
 
 - (WKWebViewConfiguration *)setUpWkWebViewConfig
 {
-<<<<<<< HEAD
-  WKWebViewConfiguration *wkWebViewConfig = [WKWebViewConfiguration new];
+  WKWebViewConfiguration *wkWebViewConfig;
+  if(self.defaultConfiguration == nil ) {
+    wkWebViewConfig = [WKWebViewConfiguration new];
+  } else {
+    wkWebViewConfig = self.defaultConfiguration;
+  }
+
   WKPreferences *prefs = [[WKPreferences alloc]init];
   BOOL _prefsUsed = NO;
   if (!_javaScriptEnabled) {
@@ -210,59 +215,6 @@ static NSDictionary* customCertificatesForHost;
     wkWebViewConfig.processPool = [[RNCWKProcessPoolManager sharedManager] sharedProcessPool];
   }
   wkWebViewConfig.userContentController = [WKUserContentController new];
-=======
-  if (self.window != nil && _webView == nil) {
-    WKWebViewConfiguration *wkWebViewConfig;
-    if(self.defaultConfiguration == nil ) {
-        wkWebViewConfig = [WKWebViewConfiguration new];
-    } else {
-        wkWebViewConfig = self.defaultConfiguration;
-    }
-
-    WKPreferences *prefs = [[WKPreferences alloc]init];
-    BOOL _prefsUsed = NO;
-    if (!_javaScriptEnabled) {
-      prefs.javaScriptEnabled = NO;
-      _prefsUsed = YES;
-    }
-    if (_allowFileAccessFromFileURLs) {
-      [prefs setValue:@TRUE forKey:@"allowFileAccessFromFileURLs"];
-      _prefsUsed = YES;
-    }
-    if (_prefsUsed) {
-      wkWebViewConfig.preferences = prefs;
-    }
-    if (_incognito) {
-      wkWebViewConfig.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore];
-    } else if (_cacheEnabled) {
-      wkWebViewConfig.websiteDataStore = [WKWebsiteDataStore defaultDataStore];
-    }
-    if(self.useSharedProcessPool) {
-      wkWebViewConfig.processPool = [[RNCWKProcessPoolManager sharedManager] sharedProcessPool];
-    }
-    wkWebViewConfig.userContentController = [WKUserContentController new];
-
-    if (_messagingEnabled) {
-      [wkWebViewConfig.userContentController addScriptMessageHandler:self name:MessageHandlerName];
-
-      NSString *source = [NSString stringWithFormat:
-        @"window.%@ = {"
-         "  postMessage: function (data) {"
-         "    window.webkit.messageHandlers.%@.postMessage(String(data));"
-         "  }"
-         "};", MessageHandlerName, MessageHandlerName
-      ];
-
-      WKUserScript *script = [[WKUserScript alloc] initWithSource:source injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES];
-      [wkWebViewConfig.userContentController addUserScript:script];
-        
-      if (_injectedJavaScriptBeforeContentLoaded) {
-        // If user has provided an injectedJavascript prop, execute it at the start of the document
-        WKUserScript *injectedScript = [[WKUserScript alloc] initWithSource:_injectedJavaScriptBeforeContentLoaded injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES];
-        [wkWebViewConfig.userContentController addUserScript:injectedScript];
-      }
-    }
->>>>>>> 56bf926b4a35d4c19e0081e13de252c88d80f658
 
   // Shim the HTML5 history API:
   [wkWebViewConfig.userContentController addScriptMessageHandler:[[RNCWeakScriptMessageDelegate alloc] initWithDelegate:self]
